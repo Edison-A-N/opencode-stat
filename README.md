@@ -1,6 +1,6 @@
-# OpenCode Token Dashboard
+# OpenCode Agent Token Tracker
 
-Local TanStack dashboard for monitoring OpenCode token usage from the local SQLite database.
+Local TanStack dashboard for tracking **per-agent token consumption** from the local OpenCode SQLite database. The core question it answers: *which agent used how many tokens, on which model, and when?*
 
 ## Stack
 
@@ -10,17 +10,16 @@ Local TanStack dashboard for monitoring OpenCode token usage from the local SQLi
 - TanStack-oriented dashboard tables and charts
 - System `sqlite3` CLI in `-readonly -json` mode for large OpenCode databases
 
-## What It Shows
+## What It Tracks
 
-- Daily token comparison using `message.time_created` rather than `session.time_updated`
-- Token totals by agent and agent/model
-- Task delegation counts
-- `task(load_skills=[...])` skill load counts
-- Direct `skill()` calls
-- Top token-heavy sessions
-- Recovery summary for sessions whose `session.agent`/`session.model` fields are empty
+Each view is organized around **agent identity** — the specific agent that performed work:
 
-The dashboard is token-focused. It intentionally does not use price/cost as a primary metric.
+- **Per-agent token totals** — input/output/cache tokens broken down by agent, with model dimension
+- **Daily agent comparison** — day-over-day token usage using `message.time_created` (not `session.time_updated`)
+- **Agent/model matrix** — which agents ran on which models and their token footprint
+- **Task delegation graph** — `task()` calls between agents, including skill loads (`load_skills=[...]`) and direct `skill()` invocations
+- **Top agent sessions** — sessions ranked by token consumption with agent attribution
+- **Attribution recovery** — restores agent/model identity for sessions where `session.agent`/`session.model` is empty, using assistant message JSON
 
 ## Data Source
 
@@ -35,7 +34,6 @@ The backend invokes `sqlite3` with `-readonly -json`. It does not write to or mo
 ## Run
 
 ```bash
-cd ~/code/opencode-stat
 npm install
 npm run build
 NODE_ENV=production npm start
