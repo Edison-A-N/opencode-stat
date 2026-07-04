@@ -1,6 +1,6 @@
 import "./styles.css";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
 const queryClient = new QueryClient({
@@ -130,13 +130,19 @@ function fmtCost(costs: Costs | undefined): string {
   if (!costs) return "—";
   const entries = Object.entries(costs).filter(([, v]) => v > 0);
   if (entries.length === 0) return "—";
-  return entries.map(([cur, val]) => `${CURRENCY_SYMBOLS[cur] || cur}${val.toFixed(2)}`).join(" / ");
+  return entries.map(([cur, val]) => `${CURRENCY_SYMBOLS[cur] || cur}${val.toFixed(2)}`).join(" · ");
 }
 function fmtCostFull(costs: Costs | undefined): string {
   if (!costs) return "";
   const entries = Object.entries(costs).filter(([, v]) => v > 0);
   if (entries.length === 0) return "";
-  return entries.map(([cur, val]) => `${CURRENCY_SYMBOLS[cur] || cur}${val.toFixed(4)}`).join(" / ");
+  return entries.map(([cur, val]) => `${CURRENCY_SYMBOLS[cur] || cur}${val.toFixed(4)}`).join(" · ");
+}
+function fmtCostMultiLine(costs: Costs | undefined): { currency: string; symbol: string; value: string }[] {
+  if (!costs) return [];
+  return Object.entries(costs)
+    .filter(([, v]) => v > 0)
+    .map(([cur, val]) => ({ currency: cur, symbol: CURRENCY_SYMBOLS[cur] || cur, value: val.toFixed(2) }));
 }
 
 // --- Hooks ---
@@ -163,24 +169,34 @@ function useHealth() {
 }
 
 // --- Components ---
-function KpiCard({ label, value, full, sub }: { label: string; value: string; full?: string; sub?: string }) {
+function KpiCard({ label, value, full, sub, children }: { label: string; value: string; full?: string; sub?: string; children?: ReactNode }) {
   return (
     <div className="kpi-card">
       <div className="kpi-label">{label}</div>
       <div className="kpi-value" title={full}>{value}</div>
       {sub && <div className="kpi-sub">{sub}</div>}
+      {children}
     </div>
   );
 }
 
 function KpiGrid({ totals }: { totals: Totals }) {
+  const costLines = fmtCostMultiLine(totals.costs);
   return (
     <section className="kpi-grid">
       <KpiCard label="Total Tokens" value={fmt(totals.total_tokens)} full={fmtFull(totals.total_tokens)} />
       <KpiCard label="Input" value={fmt(totals.input_tokens)} full={fmtFull(totals.input_tokens)} />
       <KpiCard label="Output" value={fmt(totals.output_tokens)} full={fmtFull(totals.output_tokens)} />
       <KpiCard label="Cache Read" value={fmt(totals.cache_read_tokens)} full={fmtFull(totals.cache_read_tokens)} />
-      <KpiCard label="Cost" value={fmtCost(totals.costs)} full={fmtCostFull(totals.costs)} />
+      <KpiCard label="Cost" value={costLines.length === 1 ? `${costLines[0].symbol}${costLines[0].value}` : "—"} full={fmtCostFull(totals.costs)}>
+        {costLines.length > 1 && (
+          <div className="kpi-cost-list">
+            {costLines.map((c) => (
+              <div key={c.currency} className="kpi-cost-line">{c.symbol}{c.value} <span className="kpi-cost-cur">{c.currency}</span></div>
+            ))}
+          </div>
+        )}
+      </KpiCard>
       <KpiCard label="Sessions" value={fmt(totals.sessions)} full={fmtFull(totals.sessions)} />
     </section>
   );

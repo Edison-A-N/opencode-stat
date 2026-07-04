@@ -116,6 +116,9 @@ html, body {
   margin-top: 4px;
   color: var(--accent-cyan);
 }
+.kpi-cost-list { margin-top: 4px; display: flex; flex-direction: column; gap: 2px; }
+.kpi-cost-line { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--accent-emerald); }
+.kpi-cost-cur { font-size: 11px; color: var(--text-muted); font-weight: 400; }
 
 /* Panels */
 .panel {
