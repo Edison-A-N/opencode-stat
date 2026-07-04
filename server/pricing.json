@@ -1,0 +1,46 @@
+{
+  "models": {
+    "gpt-5-5": {
+      "currency": "USD",
+      "input": 5.0,
+      "output": 30.0,
+      "cache_read": 0.5,
+      "cache_write": 5.0
+    },
+    "gpt-5.5": {
+      "currency": "USD",
+      "input": 5.0,
+      "output": 30.0,
+      "cache_read": 0.5,
+      "cache_write": 5.0
+    },
+    "glm-5-2": {
+      "currency": "CNY",
+      "input": 8,
+      "output": 28,
+      "cache_read": 2,
+      "cache_write": 8
+    },
+    "glm-5.2": {
+      "currency": "CNY",
+      "input": 8,
+      "output": 28,
+      "cache_read": 2,
+      "cache_write": 8
+    },
+    "qwen3-7-max": {
+      "currency": "CNY",
+      "input": 6,
+      "output": 18,
+      "cache_read": 0.6,
+      "cache_write": 7.5
+    },
+    "qwen3.7-max": {
+      "currency": "CNY",
+      "input": 6,
+      "output": 18,
+      "cache_read": 0.6,
+      "cache_write": 7.5
+    }
+  }
+}

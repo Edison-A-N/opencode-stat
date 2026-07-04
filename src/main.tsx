@@ -10,6 +10,7 @@ const queryClient = new QueryClient({
 });
 
 // --- Types ---
+type Costs = Record<string, number>;
 interface Totals {
   total_tokens: number;
   input_tokens: number;
@@ -20,6 +21,7 @@ interface Totals {
   sessions: number;
   task_calls: number;
   no_load_skills: number;
+  costs: Costs;
 }
 interface DailyRow {
   date: string;
@@ -29,6 +31,7 @@ interface DailyRow {
   cache_read_tokens: number;
   sessions: number;
   messages: number;
+  costs: Costs;
 }
 interface AgentRow {
   name: string;
@@ -37,6 +40,7 @@ interface AgentRow {
   output_tokens: number;
   cache_read_tokens: number;
   messages: number;
+  costs: Costs;
 }
 interface AgentModelRow extends AgentRow {
   agent: string;
@@ -54,11 +58,25 @@ interface SessionRow {
   total_tokens: number;
   messages: number;
   recovered: boolean;
+  costs: Costs;
+}
+type Granularity = "day" | "hour";
+interface HourlyRow {
+  date: string;
+  total_tokens: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  sessions: number;
+  messages: number;
+  costs: Costs;
 }
 interface Summary {
   status: string;
+  granularity: Granularity;
   totals: Totals;
   daily: DailyRow[];
+  hourly: HourlyRow[];
   top_agents: AgentRow[];
   top_agent_models: AgentModelRow[];
   delegations: CountRow[];
@@ -101,16 +119,36 @@ function deltaClass(curr: number, prev: number): string {
   return curr > prev ? "up" : curr < prev ? "down" : "neutral";
 }
 
+function fmtHour(s: string): string {
+  const tIdx = s.indexOf("T");
+  if (tIdx < 0) return s;
+  return s.slice(tIdx + 1);
+}
+
+const CURRENCY_SYMBOLS: Record<string, string> = { USD: "$", CNY: "¥" };
+function fmtCost(costs: Costs | undefined): string {
+  if (!costs) return "—";
+  const entries = Object.entries(costs).filter(([, v]) => v > 0);
+  if (entries.length === 0) return "—";
+  return entries.map(([cur, val]) => `${CURRENCY_SYMBOLS[cur] || cur}${val.toFixed(2)}`).join(" / ");
+}
+function fmtCostFull(costs: Costs | undefined): string {
+  if (!costs) return "";
+  const entries = Object.entries(costs).filter(([, v]) => v > 0);
+  if (entries.length === 0) return "";
+  return entries.map(([cur, val]) => `${CURRENCY_SYMBOLS[cur] || cur}${val.toFixed(4)}`).join(" / ");
+}
+
 // --- Hooks ---
-function useSummary(days: number) {
+function useSummary(days: number, granularity: Granularity, refreshMs: number | false) {
   return useQuery({
-    queryKey: ["summary", days],
+    queryKey: ["summary", days, granularity],
     queryFn: async () => {
-      const res = await fetch(`/api/summary?days=${days}`);
+      const res = await fetch(`/api/summary?days=${days}&granularity=${granularity}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return (await res.json()) as Summary;
     },
-    refetchInterval: 15_000,
+    refetchInterval: refreshMs,
   });
 }
 function useHealth() {
@@ -142,41 +180,134 @@ function KpiGrid({ totals }: { totals: Totals }) {
       <KpiCard label="Input" value={fmt(totals.input_tokens)} full={fmtFull(totals.input_tokens)} />
       <KpiCard label="Output" value={fmt(totals.output_tokens)} full={fmtFull(totals.output_tokens)} />
       <KpiCard label="Cache Read" value={fmt(totals.cache_read_tokens)} full={fmtFull(totals.cache_read_tokens)} />
-      <KpiCard label="Messages" value={fmt(totals.messages)} full={fmtFull(totals.messages)} />
+      <KpiCard label="Cost" value={fmtCost(totals.costs)} full={fmtCostFull(totals.costs)} />
       <KpiCard label="Sessions" value={fmt(totals.sessions)} full={fmtFull(totals.sessions)} />
     </section>
   );
 }
 
-function DailySection({ daily }: { daily: DailyRow[] }) {
-  const sorted = [...daily].sort((a, b) => b.date.localeCompare(a.date));
-  const maxTokens = Math.max(...sorted.map((d) => d.total_tokens || 0), 1);
+function LineChart({ points, color = "var(--accent-cyan)" }: { points: { label: string; value: number }[]; color?: string }) {
+  if (points.length === 0) return <div className="chart-empty">No data</div>;
+  const W = 800, H = 200, PAD_L = 50, PAD_R = 10, PAD_T = 10, PAD_B = 30;
+  const cw = W - PAD_L - PAD_R, ch = H - PAD_T - PAD_B;
+  const maxV = Math.max(...points.map(p => p.value), 1);
+  const xStep = points.length > 1 ? cw / (points.length - 1) : 0;
+  const xOf = (i: number) => PAD_L + i * xStep;
+  const yOf = (v: number) => PAD_T + ch - (v / maxV) * ch;
+  const pathD = points.map((p, i) => `${i === 0 ? "M" : "L"}${xOf(i)},${yOf(p.value)}`).join(" ");
+  const areaD = pathD + ` L${xOf(points.length - 1)},${PAD_T + ch} L${PAD_L},${PAD_T + ch} Z`;
+  const yTicks = 4;
+  const xLabelInterval = Math.max(1, Math.ceil(points.length / (W > 600 ? 12 : 6)));
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="trend-chart" preserveAspectRatio="xMidYMid meet">
+      {Array.from({ length: yTicks + 1 }, (_, i) => {
+        const v = (maxV / yTicks) * i;
+        const y = yOf(v);
+        return <g key={`y${i}`}>
+          <line x1={PAD_L} y1={y} x2={W - PAD_R} y2={y} stroke="var(--border-default)" strokeDasharray="3,3" />
+          <text x={PAD_L - 4} y={y + 4} className="chart-axis-label" textAnchor="end">{fmt(v)}</text>
+        </g>;
+      })}
+      {points.map((p, i) => i % xLabelInterval === 0 ? (
+        <text key={`x${i}`} x={xOf(i)} y={H - 4} className="chart-axis-label" textAnchor="middle">{p.label}</text>
+      ) : null)}
+      <path d={areaD} fill={color} opacity={0.1} />
+      <path d={pathD} fill="none" stroke={color} strokeWidth={2} />
+      {points.map((p, i) => <circle key={i} cx={xOf(i)} cy={yOf(p.value)} r={3} fill={color}>
+        <title>{`${p.label}: ${fmtFull(p.value)}`}</title>
+      </circle>)}
+    </svg>
+  );
+}
+
+function StackedBarChart({ rows }: { rows: { label: string; input: number; output: number; cache: number }[] }) {
+  if (rows.length === 0) return <div className="chart-empty">No data</div>;
+  const W = 800, H = 180, PAD_L = 50, PAD_R = 10, PAD_T = 10, PAD_B = 30;
+  const cw = W - PAD_L - PAD_R, ch = H - PAD_T - PAD_B;
+  const maxV = Math.max(...rows.map(r => r.input + r.output + r.cache), 1);
+  const barW = Math.max(1, cw / rows.length - 1);
+  const yOf = (v: number) => PAD_T + ch - (v / maxV) * ch;
+  const yTicks = 3;
+  const xLabelInterval = Math.max(1, Math.ceil(rows.length / (W > 600 ? 12 : 6)));
+  const layers = [
+    { key: "output" as const, color: "var(--accent-red)" },
+    { key: "input" as const, color: "var(--accent-cyan)" },
+    { key: "cache" as const, color: "var(--accent-emerald)" },
+  ];
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="trend-chart" preserveAspectRatio="xMidYMid meet">
+      {Array.from({ length: yTicks + 1 }, (_, i) => {
+        const v = (maxV / yTicks) * i;
+        const y = yOf(v);
+        return <g key={`y${i}`}>
+          <line x1={PAD_L} y1={y} x2={W - PAD_R} y2={y} stroke="var(--border-default)" strokeDasharray="3,3" />
+          <text x={PAD_L - 4} y={y + 4} className="chart-axis-label" textAnchor="end">{fmt(v)}</text>
+        </g>;
+      })}
+      {rows.map((r, i) => {
+        const x = PAD_L + i * (cw / rows.length);
+        let yBottom = PAD_T + ch;
+        const bars = layers.map(l => {
+          const v = r[l.key];
+          const yTop = yOf(r.input + r.output + r.cache - (l.key === "output" ? r.output + r.input + r.cache : l.key === "input" ? r.input + r.cache : r.cache) + v);
+          const h = yBottom - yTop;
+          yBottom = yTop;
+          return h > 0 ? <rect key={l.key} x={x} y={yTop} width={barW} height={h} fill={l.color} opacity={0.8}>
+            <title>{`${r.label} ${l.key}: ${fmtFull(v)}`}</title>
+          </rect> : null;
+        });
+        return <g key={i}>
+          {bars}
+          {i % xLabelInterval === 0 ? <text x={x + barW / 2} y={H - 4} className="chart-axis-label" textAnchor="middle">{r.label}</text> : null}
+        </g>;
+      })}
+    </svg>
+  );
+}
+
+function TrendSection({ daily, hourly, granularity }: { daily: DailyRow[]; hourly: HourlyRow[]; granularity: Granularity }) {
+  const useHourly = granularity === "hour";
+  const trendPoints = useHourly
+    ? hourly.map(h => ({ label: fmtHour(h.date), value: h.total_tokens }))
+    : daily.map(d => ({ label: fmtDate(d.date), value: d.total_tokens }));
+  const stackRows = useHourly
+    ? hourly.map(h => ({ label: fmtHour(h.date), input: h.input_tokens, output: h.output_tokens, cache: h.cache_read_tokens }))
+    : daily.map(d => ({ label: fmtDate(d.date), input: d.input_tokens, output: d.output_tokens, cache: d.cache_read_tokens }));
+  const sorted = useHourly
+    ? [...hourly].sort((a, b) => b.date.localeCompare(a.date))
+    : [...daily].sort((a, b) => b.date.localeCompare(a.date));
+  const dateCol = useHourly ? "Time" : "Date";
+  const labelFn = useHourly ? (s: string) => fmtHour(s) : (s: string) => fmtDate(s);
+
   return (
     <section className="panel">
-      <h2 className="panel-title">Daily Token Usage</h2>
+      <h2 className="panel-title">Token Trend ({useHourly ? "Hourly" : "Daily"})</h2>
       <div className="chart-container">
-        {sorted.slice(0, 7).reverse().map((d) => {
-          const pct = (d.total_tokens / maxTokens) * 100;
-          return (
-            <div key={d.date} className="bar-row">
-              <div className="bar-label">{fmtDate(d.date)}</div>
-              <div className="bar-track"><div className="bar-fill" style={{ width: `${pct}%` }} /></div>
-              <div className="bar-value">{fmt(d.total_tokens)}</div>
-            </div>
-          );
-        })}
+        <LineChart points={trendPoints} />
       </div>
-      <table className="data-table">
-        <thead><tr><th>Date</th><th className="num">Total</th><th className="num">Input</th><th className="num">Output</th><th className="num">Δ Day</th></tr></thead>
+      <div className="chart-legend">
+        <span className="legend-item"><span className="legend-swatch" style={{ background: "var(--accent-cyan)" }} />Total</span>
+      </div>
+      <div className="chart-container" style={{ marginTop: 12 }}>
+        <StackedBarChart rows={stackRows} />
+      </div>
+      <div className="chart-legend">
+        <span className="legend-item"><span className="legend-swatch" style={{ background: "var(--accent-red)" }} />Output</span>
+        <span className="legend-item"><span className="legend-swatch" style={{ background: "var(--accent-cyan)" }} />Input</span>
+        <span className="legend-item"><span className="legend-swatch" style={{ background: "var(--accent-emerald)" }} />Cache</span>
+      </div>
+      <table className="data-table" style={{ marginTop: 8 }}>
+        <thead><tr><th>{dateCol}</th><th className="num">Total</th><th className="num">Input</th><th className="num">Output</th><th className="num">Cost</th><th className="num">Δ</th></tr></thead>
         <tbody>
-          {sorted.map((d, i) => {
+          {sorted.slice(0, 20).map((d, i) => {
             const prev = sorted[i + 1];
             return (
               <tr key={d.date}>
-                <td>{fmtDate(d.date)}</td>
+                <td>{labelFn(d.date)}</td>
                 <td className="num" title={fmtFull(d.total_tokens)}>{fmt(d.total_tokens)}</td>
                 <td className="num" title={fmtFull(d.input_tokens)}>{fmt(d.input_tokens)}</td>
                 <td className="num" title={fmtFull(d.output_tokens)}>{fmt(d.output_tokens)}</td>
+                <td className="num" title={fmtCostFull(d.costs)}>{fmtCost(d.costs)}</td>
                 <td className={`num delta-${prev ? deltaClass(d.total_tokens, prev.total_tokens) : "neutral"}`}>
                   {prev ? deltaPct(d.total_tokens, prev.total_tokens) : "—"}
                 </td>
@@ -208,13 +339,14 @@ function AgentsSection({ agents }: { agents: AgentRow[] }) {
         })}
       </div>
       <table className="data-table">
-        <thead><tr><th>Agent</th><th className="num">Tokens</th><th className="num">Share</th><th className="num">Messages</th></tr></thead>
+        <thead><tr><th>Agent</th><th className="num">Tokens</th><th className="num">Share</th><th className="num">Cost</th><th className="num">Messages</th></tr></thead>
         <tbody>
           {agents.map((a) => (
             <tr key={a.name}>
               <td>{a.name}</td>
               <td className="num" title={fmtFull(a.total_tokens)}>{fmt(a.total_tokens)}</td>
               <td className="num">{totalSum > 0 ? ((a.total_tokens / totalSum) * 100).toFixed(1) : "0"}%</td>
+              <td className="num" title={fmtCostFull(a.costs)}>{fmtCost(a.costs)}</td>
               <td className="num">{fmt(a.messages)}</td>
             </tr>
           ))}
@@ -229,7 +361,7 @@ function AgentModelTable({ rows }: { rows: AgentModelRow[] }) {
     <section className="panel full-width">
       <h2 className="panel-title">Agent × Model Breakdown</h2>
       <table className="data-table">
-        <thead><tr><th>Agent</th><th>Model</th><th className="num">Total</th><th className="num">Input</th><th className="num">Cache Read</th><th className="num">Messages</th></tr></thead>
+        <thead><tr><th>Agent</th><th>Model</th><th className="num">Total</th><th className="num">Input</th><th className="num">Cache Read</th><th className="num">Cost</th><th className="num">Messages</th></tr></thead>
         <tbody>
           {rows.slice(0, 30).map((r) => (
             <tr key={`${r.agent}|${r.model}`}>
@@ -238,6 +370,7 @@ function AgentModelTable({ rows }: { rows: AgentModelRow[] }) {
               <td className="num" title={fmtFull(r.total_tokens)}>{fmt(r.total_tokens)}</td>
               <td className="num" title={fmtFull(r.input_tokens)}>{fmt(r.input_tokens)}</td>
               <td className="num" title={fmtFull(r.cache_read_tokens)}>{fmt(r.cache_read_tokens)}</td>
+              <td className="num" title={fmtCostFull(r.costs)}>{fmtCost(r.costs)}</td>
               <td className="num">{fmt(r.messages)}</td>
             </tr>
           ))}
@@ -268,7 +401,7 @@ function TopSessionsTable({ sessions }: { sessions: SessionRow[] }) {
     <section className="panel full-width">
       <h2 className="panel-title">Top Sessions</h2>
       <table className="data-table">
-        <thead><tr><th>Session</th><th>Agent</th><th>Model</th><th className="num">Tokens</th><th className="num">Messages</th></tr></thead>
+        <thead><tr><th>Session</th><th>Agent</th><th>Model</th><th className="num">Tokens</th><th className="num">Cost</th><th className="num">Messages</th></tr></thead>
         <tbody>
           {sessions.slice(0, 20).map((s) => (
             <tr key={s.session_id}>
@@ -276,6 +409,7 @@ function TopSessionsTable({ sessions }: { sessions: SessionRow[] }) {
               <td>{s.agent || "—"}</td>
               <td>{s.model || "—"}</td>
               <td className="num" title={fmtFull(s.total_tokens)}>{fmt(s.total_tokens)}</td>
+              <td className="num" title={fmtCostFull(s.costs)}>{fmtCost(s.costs)}</td>
               <td className="num">{fmt(s.messages)}</td>
             </tr>
           ))}
@@ -298,10 +432,21 @@ function RecoveryPanel({ recovery }: { recovery: Summary["recovery"] }) {
 }
 
 // --- App ---
+const REFRESH_OPTIONS = [
+  { label: "Off", value: 0 },
+  { label: "5s", value: 5 },
+  { label: "15s", value: 15 },
+  { label: "30s", value: 30 },
+  { label: "60s", value: 60 },
+] as const;
+
 function App() {
   const [days, setDays] = useState(7);
+  const [granularity, setGranularity] = useState<Granularity>("day");
+  const [refreshSec, setRefreshSec] = useState(15);
+  const refreshMs = refreshSec > 0 ? (refreshSec * 1000) as number : false;
   const health = useHealth();
-  const summary = useSummary(days);
+  const summary = useSummary(days, granularity, refreshMs);
 
   const isLoading = summary.isLoading && !summary.data;
   const isError = summary.isError;
@@ -320,11 +465,24 @@ function App() {
           </div>
         </div>
         <div className="header-right">
-          <span className="refresh-info">Auto-refresh: 15s</span>
+          <select
+            className="days-selector"
+            value={refreshSec}
+            onChange={(e) => setRefreshSec(Number(e.target.value))}
+            title="Auto-refresh interval"
+          >
+            {REFRESH_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>Auto: {o.label}</option>
+            ))}
+          </select>
           <span className="last-updated">
             {summary.dataUpdatedAt ? `Last: ${new Date(summary.dataUpdatedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : "—"}
           </span>
-          <select className="days-selector" value={days} onChange={(e) => setDays(Number(e.target.value))}>
+          <select className="days-selector" value={days} onChange={(e) => {
+            const v = Number(e.target.value);
+            setDays(v);
+            if (v > 7) setGranularity("day");
+          }}>
             <option value={1}>1 day</option>
             <option value={3}>3 days</option>
             <option value={7}>7 days</option>
@@ -332,7 +490,11 @@ function App() {
             <option value={30}>30 days</option>
             <option value={90}>90 days</option>
           </select>
-          <button type="button" className="btn-refresh" onClick={() => summary.refetch()}>
+          <select className="days-selector" value={granularity} onChange={(e) => setGranularity(e.target.value as Granularity)}>
+            <option value="day">By Day</option>
+            <option value="hour" disabled={days > 7}>By Hour{days > 7 ? " (≤7d)" : ""}</option>
+          </select>
+          <button type="button" className={`btn-refresh${summary.isFetching ? " refreshing" : ""}`} onClick={() => summary.refetch()}>
             <span className="btn-icon">↻</span> Refresh
           </button>
         </div>
@@ -351,7 +513,7 @@ function App() {
         <>
           <KpiGrid totals={data.totals} />
           <div className="grid-two-col">
-            <DailySection daily={data.daily} />
+            <TrendSection daily={data.daily} hourly={data.hourly} granularity={granularity} />
             <AgentsSection agents={data.top_agents} />
           </div>
           <AgentModelTable rows={data.top_agent_models} />

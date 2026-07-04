@@ -3,7 +3,7 @@ import cors from "cors";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { existsSync } from "fs";
-import { computeSummary } from "./summary.js";
+import { computeSummary, type Granularity } from "./summary.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -29,8 +29,10 @@ async function main() {
     const rawDays = Number(req.query.days);
     const requestedDays = Number.isFinite(rawDays) ? rawDays : 7;
     const days = Math.max(1, Math.min(requestedDays, 90));
+    const rawGranularity = String(req.query.granularity || "day");
+    const granularity: Granularity = rawGranularity === "hour" ? "hour" : "day";
     try {
-      res.json(computeSummary(days));
+      res.json(computeSummary(days, granularity));
     } catch (err: any) {
       res.status(500).json({ status: "error", error: err.message });
     }

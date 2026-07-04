@@ -1,9 +1,52 @@
 import { query, type DbRow } from "./db.js";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+interface ModelPrice {
+  currency: string;
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+}
+
+const pricingData = JSON.parse(
+  readFileSync(join(__dirname, "pricing.json"), "utf8"),
+) as { models: Record<string, ModelPrice> };
+
+function lookupPrice(modelId: string): ModelPrice | null {
+  if (!modelId) return null;
+  const models = pricingData.models as Record<string, ModelPrice>;
+  const direct = models[modelId];
+  if (direct) return direct;
+  const normalized = modelId.replace(/[-.]/g, (m, _o, _s) => m);
+  for (const [key, val] of Object.entries(models)) {
+    if (key.replace(/[-.]/g, (m2) => m2) === normalized) return val;
+  }
+  return null;
+}
+
+function computeCost(tokens: { input: number; output: number; reasoning: number; cache_read: number; cache_write: number }, price: ModelPrice): number {
+  return (
+    (tokens.input * price.input) / 1_000_000 +
+    (tokens.output * price.output) / 1_000_000 +
+    (tokens.reasoning * price.output) / 1_000_000 + // reasoning charged at output rate (matches OpenCode behavior)
+    (tokens.cache_read * price.cache_read) / 1_000_000 +
+    (tokens.cache_write * price.cache_write) / 1_000_000
+  );
+}
 
 const TOKEN_KEYS = ["input", "output", "reasoning", "cache_read", "cache_write"] as const;
 
 function newBucket() {
-  return { input: 0, output: 0, reasoning: 0, cache_read: 0, cache_write: 0, assistant_messages: 0 };
+  return { 
+    input: 0, output: 0, reasoning: 0, cache_read: 0, cache_write: 0, 
+    assistant_messages: 0,
+    costs: {} as Record<string, number>,
+  };
 }
 
 function addTokens(bucket: any, tokens: any, messages = 1) {
@@ -11,6 +54,13 @@ function addTokens(bucket: any, tokens: any, messages = 1) {
     bucket[key] += Number(tokens[key] || 0);
   }
   bucket.assistant_messages += messages;
+}
+
+function addCost(bucket: any, modelId: string, tokens: any) {
+  const price = lookupPrice(modelId);
+  if (!price) return;
+  const c = computeCost(tokens, price);
+  bucket.costs[price.currency] = (bucket.costs[price.currency] || 0) + c;
 }
 
 function totalTokens(bucket: any): number {
@@ -28,6 +78,7 @@ function exposeTokens(bucket: any): any {
     tokens: totalTokens(bucket),
     total_tokens: totalTokens(bucket),
     messages: bucket.assistant_messages,
+    costs: bucket.costs || {},
   };
 }
 
@@ -47,7 +98,6 @@ function startOfLocalDay(days: number): number {
   return start.getTime();
 }
 
-
 function localDateKey(value: number | Date): string {
   const date = value instanceof Date ? value : new Date(value);
   const year = date.getFullYear();
@@ -56,22 +106,35 @@ function localDateKey(value: number | Date): string {
   return `${year}-${month}-${day}`;
 }
 
+function localHourKey(value: number | Date): string {
+  const date = value instanceof Date ? value : new Date(value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hour = String(date.getHours()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hour}:00`;
+}
+
 function compactCounter(counter: Map<string, number>, keyName = "name", limit = 30) {
   const sorted = [...counter.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit);
   return sorted.map(([name, count]) => ({ [keyName]: name, name, count }));
 }
 
-export function computeSummary(days: number): any {
+export type Granularity = "day" | "hour";
+
+export function computeSummary(days: number, granularity: Granularity = "day"): any {
   const nowMs = Date.now();
   const cutoffMs = startOfLocalDay(days);
 
   const totals: any = newBucket();
-  const totalsSessions = new Set<string>();
-  const byDay = new Map<string, any>();
+  const totalsSessions = new Set();
+  const byDay = new Map();
+  const byHour = new Map(); // only populated when granularity is 'hour'
   const daySessions = new Map<string, Set<string>>();
-  const byAgent = new Map<string, any>();
-  const byAgentModel = new Map<string, any>();
-  const bySession = new Map<string, any>();
+  const hourSessions = new Map<string, Set<string>>(); // only populated when granularity is 'hour'
+  const byAgent = new Map();
+  const byAgentModel = new Map();
+  const bySession = new Map();
   const emptySessionIds = new Set<string>();
   const recoveredSessionIds = new Set<string>();
 
@@ -141,14 +204,29 @@ export function computeSummary(days: number): any {
       if (msgAgent) recoveredSessionIds.add(sessionId);
     }
 
-    const day = localDateKey(Number(row.time_created));
+    const ts = Number(row.time_created);
+    const day = localDateKey(ts);
     addTokens(totals, tokens);
+    addCost(totals, modelId, tokens);
     totalsSessions.add(sessionId);
     addTokens(getOrCreate(byDay, day, newBucket), tokens);
+    addCost(getOrCreate(byDay, day, newBucket), modelId, tokens);
     if (!daySessions.has(day)) daySessions.set(day, new Set());
     daySessions.get(day)!.add(sessionId);
-    addTokens(getOrCreate(byAgent, agent, newBucket), tokens);
-    addTokens(getOrCreate(byAgentModel, `${agent}|${modelLabel}`, newBucket), tokens);
+    if (granularity === "hour") {
+      const hour = localHourKey(ts);
+      const hb = getOrCreate(byHour, hour, newBucket);
+      addTokens(hb, tokens);
+      addCost(hb, modelId, tokens);
+      if (!hourSessions.has(hour)) hourSessions.set(hour, new Set());
+      hourSessions.get(hour)!.add(sessionId);
+    }
+    const ab = getOrCreate(byAgent, agent, newBucket);
+    addTokens(ab, tokens);
+    addCost(ab, modelId, tokens);
+    const amb = getOrCreate(byAgentModel, `${agent}|${modelLabel}`, newBucket);
+    addTokens(amb, tokens);
+    addCost(amb, modelId, tokens);
 
     if (!bySession.has(sessionId)) {
       const item = newBucket();
@@ -162,6 +240,7 @@ export function computeSummary(days: number): any {
       bySession.set(sessionId, item);
     }
     addTokens(bySession.get(sessionId)!, tokens);
+    addCost(bySession.get(sessionId)!, modelId, tokens);
   }
 
   // Tool calls from part table — also use json_extract to avoid raw blob
@@ -219,6 +298,21 @@ export function computeSummary(days: number): any {
     current = new Date(current.getFullYear(), current.getMonth(), current.getDate() + 1);
   }
 
+  const hourly: any[] = [];
+  if (granularity === "hour") {
+    let currentHour = new Date(cutoffMs);
+    const totalHours = days * 24;
+    for (let i = 0; i < totalHours; i++) {
+      if (currentHour.getTime() > nowMs) break;
+      const key = localHourKey(currentHour);
+      const item = exposeTokens(byHour.get(key) || newBucket());
+      item.date = key;
+      item.sessions = hourSessions.get(key)?.size || 0;
+      hourly.push(item);
+      currentHour = new Date(currentHour.getTime() + 3600000); // +1 hour
+    }
+  }
+
   const topAgents = [...byAgent.entries()]
     .sort((a, b) => totalTokens(b[1]) - totalTokens(a[1]))
     .slice(0, 30)
@@ -251,10 +345,12 @@ export function computeSummary(days: number): any {
   return {
     status: "ok",
     days,
+    granularity,
     cutoff_ms: cutoffMs,
     now_ms: nowMs,
     totals: totalsExposed,
     daily,
+    hourly,
     top_agents: topAgents,
     top_agent_models: topAgentModels,
     delegations: compactCounter(taskDelegations, undefined, 30),

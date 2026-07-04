@@ -7,7 +7,7 @@
     "dev": "tsx server/index.ts",
     "dev:client": "vite",
     "dev:full": "concurrently \"npm:dev\" \"npm:dev:client\"",
-    "build": "vite build && tsc -p tsconfig.server.json",
+    "build": "vite build && tsc -p tsconfig.server.json && cp server/pricing.json dist/server/pricing.json",
     "start": "node dist/server/index.js",
     "preview": "npm run build && npm start"
   },
