@@ -126,23 +126,29 @@ function fmtHour(s: string): string {
 }
 
 const CURRENCY_SYMBOLS: Record<string, string> = { USD: "$", CNY: "¥" };
-function fmtCost(costs: Costs | undefined): string {
-  if (!costs) return "—";
-  const entries = Object.entries(costs).filter(([, v]) => v > 0);
-  if (entries.length === 0) return "—";
-  return entries.map(([cur, val]) => `${CURRENCY_SYMBOLS[cur] || cur}${val.toFixed(2)}`).join(" · ");
-}
-function fmtCostFull(costs: Costs | undefined): string {
-  if (!costs) return "";
-  const entries = Object.entries(costs).filter(([, v]) => v > 0);
-  if (entries.length === 0) return "";
-  return entries.map(([cur, val]) => `${CURRENCY_SYMBOLS[cur] || cur}${val.toFixed(4)}`).join(" · ");
-}
-function fmtCostMultiLine(costs: Costs | undefined): { currency: string; symbol: string; value: string }[] {
+function fmtCostLines(costs: Costs | undefined): { symbol: string; value: string; currency: string }[] {
   if (!costs) return [];
   return Object.entries(costs)
     .filter(([, v]) => v > 0)
-    .map(([cur, val]) => ({ currency: cur, symbol: CURRENCY_SYMBOLS[cur] || cur, value: val.toFixed(2) }));
+    .map(([cur, val]) => ({ symbol: CURRENCY_SYMBOLS[cur] || cur, value: val.toFixed(2), currency: cur }));
+}
+function fmtCostFull(costs: Costs | undefined): string {
+  if (!costs) return "";
+  const lines = fmtCostLines(costs);
+  if (lines.length === 0) return "";
+  return lines.map((l) => `${l.symbol}${l.value} ${l.currency}`).join("; ");
+}
+function CostCell({ costs }: { costs: Costs | undefined }) {
+  const lines = fmtCostLines(costs);
+  if (lines.length === 0) return <span className="num">—</span>;
+  if (lines.length === 1) return <span className="num">{lines[0].symbol}{lines[0].value}</span>;
+  return (
+    <span className="num cost-cell-multi">
+      {lines.map((l, i) => (
+        <span key={l.currency} className="cost-cell-line">{l.symbol}{l.value} <span className="cost-cell-cur">{l.currency}</span>{i < lines.length - 1 && <br />}</span>
+      ))}
+    </span>
+  );
 }
 
 // --- Hooks ---
@@ -181,7 +187,7 @@ function KpiCard({ label, value, full, sub, children }: { label: string; value: 
 }
 
 function KpiGrid({ totals }: { totals: Totals }) {
-  const costLines = fmtCostMultiLine(totals.costs);
+  const costLines = fmtCostLines(totals.costs);
   return (
     <section className="kpi-grid">
       <KpiCard label="Total Tokens" value={fmt(totals.total_tokens)} full={fmtFull(totals.total_tokens)} />
@@ -323,7 +329,7 @@ function TrendSection({ daily, hourly, granularity }: { daily: DailyRow[]; hourl
                 <td className="num" title={fmtFull(d.total_tokens)}>{fmt(d.total_tokens)}</td>
                 <td className="num" title={fmtFull(d.input_tokens)}>{fmt(d.input_tokens)}</td>
                 <td className="num" title={fmtFull(d.output_tokens)}>{fmt(d.output_tokens)}</td>
-                <td className="num" title={fmtCostFull(d.costs)}>{fmtCost(d.costs)}</td>
+                <td className="num" title={fmtCostFull(d.costs)}><CostCell costs={d.costs} /></td>
                 <td className={`num delta-${prev ? deltaClass(d.total_tokens, prev.total_tokens) : "neutral"}`}>
                   {prev ? deltaPct(d.total_tokens, prev.total_tokens) : "—"}
                 </td>
@@ -362,7 +368,7 @@ function AgentsSection({ agents }: { agents: AgentRow[] }) {
               <td>{a.name}</td>
               <td className="num" title={fmtFull(a.total_tokens)}>{fmt(a.total_tokens)}</td>
               <td className="num">{totalSum > 0 ? ((a.total_tokens / totalSum) * 100).toFixed(1) : "0"}%</td>
-              <td className="num" title={fmtCostFull(a.costs)}>{fmtCost(a.costs)}</td>
+              <td className="num" title={fmtCostFull(a.costs)}><CostCell costs={a.costs} /></td>
               <td className="num">{fmt(a.messages)}</td>
             </tr>
           ))}
@@ -386,7 +392,7 @@ function AgentModelTable({ rows }: { rows: AgentModelRow[] }) {
               <td className="num" title={fmtFull(r.total_tokens)}>{fmt(r.total_tokens)}</td>
               <td className="num" title={fmtFull(r.input_tokens)}>{fmt(r.input_tokens)}</td>
               <td className="num" title={fmtFull(r.cache_read_tokens)}>{fmt(r.cache_read_tokens)}</td>
-              <td className="num" title={fmtCostFull(r.costs)}>{fmtCost(r.costs)}</td>
+              <td className="num" title={fmtCostFull(r.costs)}><CostCell costs={r.costs} /></td>
               <td className="num">{fmt(r.messages)}</td>
             </tr>
           ))}
@@ -425,7 +431,7 @@ function TopSessionsTable({ sessions }: { sessions: SessionRow[] }) {
               <td>{s.agent || "—"}</td>
               <td>{s.model || "—"}</td>
               <td className="num" title={fmtFull(s.total_tokens)}>{fmt(s.total_tokens)}</td>
-              <td className="num" title={fmtCostFull(s.costs)}>{fmtCost(s.costs)}</td>
+              <td className="num" title={fmtCostFull(s.costs)}><CostCell costs={s.costs} /></td>
               <td className="num">{fmt(s.messages)}</td>
             </tr>
           ))}
