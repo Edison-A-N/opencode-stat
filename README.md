@@ -55,10 +55,27 @@ npm run dev:client # Vite frontend on 127.0.0.1:5173, proxies /api
 ## Configuration
 
 ```bash
-OPENCODE_DB=/path/to/opencode.db  # optional
-HOST=0.0.0.0                      # optional
-PORT=12580                        # optional
+OPENCODE_DB=/path/to/opencode.db                      # optional, token usage DB
+OPENCODE_CONFIG=/path/to/opencode.json                 # optional, user model cost overrides
+OPENCODE_MODELS=/path/to/models.json                   # optional, built-in model catalog
+HOST=0.0.0.0                                           # optional
+PORT=12580                                             # optional
 ```
+
+### Cost / Pricing
+
+Model costs are read from OpenCode's own config — no separate price table to maintain:
+
+1. **Built-in catalog** (`~/.cache/opencode/models.json` by default) — OpenCode ships hundreds of models with `cost: { input, output, cache_read, cache_write }` (USD per 1M tokens).
+2. **User config** (`~/.config/opencode/opencode.json` by default) — `provider.<name>.models.<id>.cost` overrides or adds to the built-in catalog.
+
+To add or change a model's price, edit `~/.config/opencode/opencode.json` and restart the service.
+
+**Currency**: OpenCode's `cost` schema has no `currency` field (implicitly USD). CNY billing for horologium's `glm-5-2` / `qwen3-7-max` is preserved via an internal map in `server/model-costs.ts` (`CNY_MODELS`). Add new CNY models there.
+
+**Legacy field**: older configs may use `cached_input` instead of `cache_read` — both are accepted.
+
+**Missing cost**: models without a `cost` block contribute token counts but no cost (not an error).
 
 ## API
 

@@ -1,42 +1,19 @@
 import { query, type DbRow } from "./db.js";
-import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import {
+  computeCost,
+  loadModelPrices,
+  lookupPrice,
+  type ModelPriceIndex,
+} from "./model-costs.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+// Load model costs once at startup from OpenCode config + built-in catalog.
+const modelPrices: ModelPriceIndex = loadModelPrices();
 
-interface ModelPrice {
-  currency: string;
-  input: number;
-  output: number;
-  cache_read: number;
-  cache_write: number;
-}
-
-const pricingData = JSON.parse(
-  readFileSync(join(__dirname, "pricing.json"), "utf8"),
-) as { models: Record<string, ModelPrice> };
-
-function lookupPrice(modelId: string): ModelPrice | null {
-  if (!modelId) return null;
-  const models = pricingData.models as Record<string, ModelPrice>;
-  const direct = models[modelId];
-  if (direct) return direct;
-  const normalized = modelId.replace(/[-.]/g, (m, _o, _s) => m);
-  for (const [key, val] of Object.entries(models)) {
-    if (key.replace(/[-.]/g, (m2) => m2) === normalized) return val;
-  }
-  return null;
-}
-
-function computeCost(tokens: { input: number; output: number; reasoning: number; cache_read: number; cache_write: number }, price: ModelPrice): number {
-  return (
-    (tokens.input * price.input) / 1_000_000 +
-    (tokens.output * price.output) / 1_000_000 +
-    (tokens.reasoning * price.output) / 1_000_000 + // reasoning charged at output rate (matches OpenCode behavior)
-    (tokens.cache_read * price.cache_read) / 1_000_000 +
-    (tokens.cache_write * price.cache_write) / 1_000_000
-  );
+function addCost(bucket: any, providerId: string, modelId: string, tokens: any) {
+  const price = lookupPrice(modelPrices, providerId, modelId);
+  if (!price) return;
+  const c = computeCost(tokens, price);
+  bucket.costs[price.currency] = (bucket.costs[price.currency] || 0) + c;
 }
 
 const TOKEN_KEYS = ["input", "output", "reasoning", "cache_read", "cache_write"] as const;
@@ -54,13 +31,6 @@ function addTokens(bucket: any, tokens: any, messages = 1) {
     bucket[key] += Number(tokens[key] || 0);
   }
   bucket.assistant_messages += messages;
-}
-
-function addCost(bucket: any, modelId: string, tokens: any) {
-  const price = lookupPrice(modelId);
-  if (!price) return;
-  const c = computeCost(tokens, price);
-  bucket.costs[price.currency] = (bucket.costs[price.currency] || 0) + c;
 }
 
 function totalTokens(bucket: any): number {
@@ -207,26 +177,26 @@ export function computeSummary(days: number, granularity: Granularity = "day"): 
     const ts = Number(row.time_created);
     const day = localDateKey(ts);
     addTokens(totals, tokens);
-    addCost(totals, modelId, tokens);
+    addCost(totals, provider, modelId, tokens);
     totalsSessions.add(sessionId);
     addTokens(getOrCreate(byDay, day, newBucket), tokens);
-    addCost(getOrCreate(byDay, day, newBucket), modelId, tokens);
+    addCost(getOrCreate(byDay, day, newBucket), provider, modelId, tokens);
     if (!daySessions.has(day)) daySessions.set(day, new Set());
     daySessions.get(day)!.add(sessionId);
     if (granularity === "hour") {
       const hour = localHourKey(ts);
       const hb = getOrCreate(byHour, hour, newBucket);
       addTokens(hb, tokens);
-      addCost(hb, modelId, tokens);
+      addCost(hb, provider, modelId, tokens);
       if (!hourSessions.has(hour)) hourSessions.set(hour, new Set());
       hourSessions.get(hour)!.add(sessionId);
     }
     const ab = getOrCreate(byAgent, agent, newBucket);
     addTokens(ab, tokens);
-    addCost(ab, modelId, tokens);
+    addCost(ab, provider, modelId, tokens);
     const amb = getOrCreate(byAgentModel, `${agent}|${modelLabel}`, newBucket);
     addTokens(amb, tokens);
-    addCost(amb, modelId, tokens);
+    addCost(amb, provider, modelId, tokens);
 
     if (!bySession.has(sessionId)) {
       const item = newBucket();
@@ -240,7 +210,7 @@ export function computeSummary(days: number, granularity: Granularity = "day"): 
       bySession.set(sessionId, item);
     }
     addTokens(bySession.get(sessionId)!, tokens);
-    addCost(bySession.get(sessionId)!, modelId, tokens);
+    addCost(bySession.get(sessionId)!, provider, modelId, tokens);
   }
 
   // Tool calls from part table — also use json_extract to avoid raw blob
