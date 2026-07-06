@@ -62,6 +62,7 @@ const CNY_MODELS = new Set([
   "horologium/glm-5.2",
   "horologium/qwen3-7-max",
   "horologium/qwen3.7-max",
+  "horologium-claude/kimi-2-7",
 ]);
 
 function currencyFor(providerId: string, modelId: string): string {
